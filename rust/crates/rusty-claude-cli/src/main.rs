@@ -14,7 +14,9 @@ use api::{
     ToolResultContentBlock,
 };
 
-use commands::{render_slash_command_help, resume_supported_slash_commands, SlashCommand};
+use commands::{
+    render_slash_command_help, resume_supported_slash_commands, slash_command_specs, SlashCommand,
+};
 use compat_harness::{extract_manifest, UpstreamPaths};
 use render::{Spinner, TerminalRenderer};
 use runtime::{
@@ -716,22 +718,35 @@ fn run_repl(
     allowed_tools: Option<AllowedToolSet>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut cli = LiveCli::new(model, true, allowed_tools)?;
-    let editor = input::LineEditor::new("› ");
+    let mut editor = input::LineEditor::new("› ", slash_command_completion_candidates());
     println!("{}", cli.startup_banner());
 
-    while let Some(input) = editor.read_line()? {
-        let trimmed = input.trim();
-        if trimmed.is_empty() {
-            continue;
+    loop {
+        match editor.read_line()? {
+            input::ReadOutcome::Submit(input) => {
+                let trimmed = input.trim().to_string();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if matches!(trimmed.as_str(), "/exit" | "/quit") {
+                    cli.persist_session()?;
+                    break;
+                }
+                if let Some(command) = SlashCommand::parse(&trimmed) {
+                    if cli.handle_repl_command(command)? {
+                        cli.persist_session()?;
+                    }
+                    continue;
+                }
+                editor.push_history(input);
+                cli.run_turn(&trimmed)?;
+            }
+            input::ReadOutcome::Cancel => {}
+            input::ReadOutcome::Exit => {
+                cli.persist_session()?;
+                break;
+            }
         }
-        if matches!(trimmed, "/exit" | "/quit") {
-            break;
-        }
-        if let Some(command) = SlashCommand::parse(trimmed) {
-            cli.handle_repl_command(command)?;
-            continue;
-        }
-        cli.run_turn(trimmed)?;
     }
 
     Ok(())
@@ -885,28 +900,60 @@ impl LiveCli {
     fn handle_repl_command(
         &mut self,
         command: SlashCommand,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        match command {
-            SlashCommand::Help => println!("{}", render_repl_help()),
-            SlashCommand::Status => self.print_status(),
-            SlashCommand::Compact => self.compact()?,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        Ok(match command {
+            SlashCommand::Help => {
+                println!("{}", render_repl_help());
+                false
+            }
+            SlashCommand::Status => {
+                self.print_status();
+                false
+            }
+            SlashCommand::Compact => {
+                self.compact()?;
+                false
+            }
             SlashCommand::Model { model } => self.set_model(model)?,
             SlashCommand::Permissions { mode } => self.set_permissions(mode)?,
             SlashCommand::Clear { confirm } => self.clear_session(confirm)?,
-            SlashCommand::Cost => self.print_cost(),
-            SlashCommand::Resume { session_path } => self.resume_session(session_path)?,
-            SlashCommand::Config { section } => Self::print_config(section.as_deref())?,
-            SlashCommand::Memory => Self::print_memory()?,
-            SlashCommand::Init => Self::run_init()?,
-            SlashCommand::Diff => Self::print_diff()?,
-            SlashCommand::Version => Self::print_version(),
-            SlashCommand::Export { path } => self.export_session(path.as_deref())?,
-            SlashCommand::Session { action, target } => {
-                self.handle_session_command(action.as_deref(), target.as_deref())?;
+            SlashCommand::Cost => {
+                self.print_cost();
+                false
             }
-            SlashCommand::Unknown(name) => eprintln!("unknown slash command: /{name}"),
-        }
-        Ok(())
+            SlashCommand::Resume { session_path } => self.resume_session(session_path)?,
+            SlashCommand::Config { section } => {
+                Self::print_config(section.as_deref())?;
+                false
+            }
+            SlashCommand::Memory => {
+                Self::print_memory()?;
+                false
+            }
+            SlashCommand::Init => {
+                Self::run_init()?;
+                false
+            }
+            SlashCommand::Diff => {
+                Self::print_diff()?;
+                false
+            }
+            SlashCommand::Version => {
+                Self::print_version();
+                false
+            }
+            SlashCommand::Export { path } => {
+                self.export_session(path.as_deref())?;
+                false
+            }
+            SlashCommand::Session { action, target } => {
+                self.handle_session_command(action.as_deref(), target.as_deref())?
+            }
+            SlashCommand::Unknown(name) => {
+                eprintln!("unknown slash command: /{name}");
+                false
+            }
+        })
     }
 
     fn persist_session(&self) -> Result<(), Box<dyn std::error::Error>> {
@@ -934,7 +981,7 @@ impl LiveCli {
         );
     }
 
-    fn set_model(&mut self, model: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
+    fn set_model(&mut self, model: Option<String>) -> Result<bool, Box<dyn std::error::Error>> {
         let Some(model) = model else {
             println!(
                 "{}",
@@ -944,7 +991,7 @@ impl LiveCli {
                     self.runtime.usage().turns(),
                 )
             );
-            return Ok(());
+            return Ok(false);
         };
 
         if model == self.model {
@@ -956,7 +1003,7 @@ impl LiveCli {
                     self.runtime.usage().turns(),
                 )
             );
-            return Ok(());
+            return Ok(false);
         }
 
         let previous = self.model.clone();
@@ -970,18 +1017,20 @@ impl LiveCli {
             self.allowed_tools.clone(),
         )?;
         self.model.clone_from(&model);
-        self.persist_session()?;
         println!(
             "{}",
             format_model_switch_report(&previous, &model, message_count)
         );
-        Ok(())
+        Ok(true)
     }
 
-    fn set_permissions(&mut self, mode: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
+    fn set_permissions(
+        &mut self,
+        mode: Option<String>,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
         let Some(mode) = mode else {
             println!("{}", format_permissions_report(permission_mode_label()));
-            return Ok(());
+            return Ok(false);
         };
 
         let normalized = normalize_permission_mode(&mode).ok_or_else(|| {
@@ -992,7 +1041,7 @@ impl LiveCli {
 
         if normalized == permission_mode_label() {
             println!("{}", format_permissions_report(normalized));
-            return Ok(());
+            return Ok(false);
         }
 
         let previous = permission_mode_label().to_string();
@@ -1005,20 +1054,19 @@ impl LiveCli {
             self.allowed_tools.clone(),
             normalized,
         )?;
-        self.persist_session()?;
         println!(
             "{}",
             format_permissions_switch_report(&previous, normalized)
         );
-        Ok(())
+        Ok(true)
     }
 
-    fn clear_session(&mut self, confirm: bool) -> Result<(), Box<dyn std::error::Error>> {
+    fn clear_session(&mut self, confirm: bool) -> Result<bool, Box<dyn std::error::Error>> {
         if !confirm {
             println!(
                 "clear: confirmation required; run /clear --confirm to start a fresh session."
             );
-            return Ok(());
+            return Ok(false);
         }
 
         self.session = create_managed_session_handle()?;
@@ -1030,14 +1078,13 @@ impl LiveCli {
             self.allowed_tools.clone(),
             permission_mode_label(),
         )?;
-        self.persist_session()?;
         println!(
             "Session cleared\n  Mode             fresh session\n  Preserved model  {}\n  Permission mode  {}\n  Session          {}",
             self.model,
             permission_mode_label(),
             self.session.id,
         );
-        Ok(())
+        Ok(true)
     }
 
     fn print_cost(&self) {
@@ -1048,10 +1095,10 @@ impl LiveCli {
     fn resume_session(
         &mut self,
         session_path: Option<String>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<bool, Box<dyn std::error::Error>> {
         let Some(session_ref) = session_path else {
             println!("Usage: /resume <session-path>");
-            return Ok(());
+            return Ok(false);
         };
 
         let handle = resolve_session_reference(&session_ref)?;
@@ -1066,7 +1113,6 @@ impl LiveCli {
             permission_mode_label(),
         )?;
         self.session = handle;
-        self.persist_session()?;
         println!(
             "{}",
             format_resume_report(
@@ -1075,7 +1121,7 @@ impl LiveCli {
                 self.runtime.usage().turns(),
             )
         );
-        Ok(())
+        Ok(true)
     }
 
     fn print_config(section: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
@@ -1120,16 +1166,16 @@ impl LiveCli {
         &mut self,
         action: Option<&str>,
         target: Option<&str>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<bool, Box<dyn std::error::Error>> {
         match action {
             None | Some("list") => {
                 println!("{}", render_session_list(&self.session.id)?);
-                Ok(())
+                Ok(false)
             }
             Some("switch") => {
                 let Some(target) = target else {
                     println!("Usage: /session switch <session-id>");
-                    return Ok(());
+                    return Ok(false);
                 };
                 let handle = resolve_session_reference(target)?;
                 let session = Session::load_from_path(&handle.path)?;
@@ -1143,18 +1189,17 @@ impl LiveCli {
                     permission_mode_label(),
                 )?;
                 self.session = handle;
-                self.persist_session()?;
                 println!(
                     "Session switched\n  Active session   {}\n  File             {}\n  Messages         {}",
                     self.session.id,
                     self.session.path.display(),
                     message_count,
                 );
-                Ok(())
+                Ok(true)
             }
             Some(other) => {
                 println!("Unknown /session action '{other}'. Use /session list or /session switch <session-id>.");
-                Ok(())
+                Ok(false)
             }
         }
     }
@@ -1283,6 +1328,10 @@ fn render_repl_help() -> String {
         "REPL".to_string(),
         "  /exit                Quit the REPL".to_string(),
         "  /quit                Quit the REPL".to_string(),
+        "  Up/Down              Navigate prompt history".to_string(),
+        "  Tab                  Complete slash commands".to_string(),
+        "  Ctrl-C               Clear input (or exit on empty prompt)".to_string(),
+        "  Shift+Enter/Ctrl+J   Insert a newline".to_string(),
         String::new(),
         render_slash_command_help(),
     ]
@@ -1866,6 +1915,63 @@ impl ApiClient for AnthropicRuntimeClient {
     }
 }
 
+fn slash_command_completion_candidates() -> Vec<String> {
+    slash_command_specs()
+        .iter()
+        .map(|spec| format!("/{}", spec.name))
+        .collect()
+}
+
+fn format_tool_call_start(name: &str, input: &str) -> String {
+    format!(
+        "Tool call
+  Name             {name}
+  Input            {}",
+        summarize_tool_payload(input)
+    )
+}
+
+fn format_tool_result(name: &str, output: &str, is_error: bool) -> String {
+    let status = if is_error { "error" } else { "ok" };
+    format!(
+        "### Tool `{name}`
+
+- Status: {status}
+- Output:
+
+```json
+{}
+```
+",
+        prettify_tool_payload(output)
+    )
+}
+
+fn summarize_tool_payload(payload: &str) -> String {
+    let compact = match serde_json::from_str::<serde_json::Value>(payload) {
+        Ok(value) => value.to_string(),
+        Err(_) => payload.trim().to_string(),
+    };
+    truncate_for_summary(&compact, 96)
+}
+
+fn prettify_tool_payload(payload: &str) -> String {
+    match serde_json::from_str::<serde_json::Value>(payload) {
+        Ok(value) => serde_json::to_string_pretty(&value).unwrap_or_else(|_| payload.to_string()),
+        Err(_) => payload.to_string(),
+    }
+}
+
+fn truncate_for_summary(value: &str, limit: usize) -> String {
+    let mut chars = value.chars();
+    let truncated = chars.by_ref().take(limit).collect::<String>();
+    if chars.next().is_some() {
+        format!("{truncated}…")
+    } else {
+        truncated
+    }
+}
+
 fn push_output_block(
     block: OutputContentBlock,
     out: &mut impl Write,
@@ -1882,6 +1988,14 @@ fn push_output_block(
             }
         }
         OutputContentBlock::ToolUse { id, name, input } => {
+            writeln!(
+                out,
+                "
+{}",
+                format_tool_call_start(&name, &input.to_string())
+            )
+            .and_then(|()| out.flush())
+            .map_err(|error| RuntimeError::new(error.to_string()))?;
             *pending_tool = Some((id, name, input.to_string()));
         }
     }
@@ -1941,13 +2055,19 @@ impl ToolExecutor for CliToolExecutor {
             .map_err(|error| ToolError::new(format!("invalid tool input JSON: {error}")))?;
         match execute_tool(tool_name, &value) {
             Ok(output) => {
-                let markdown = format!("### Tool `{tool_name}`\n\n```json\n{output}\n```\n");
+                let markdown = format_tool_result(tool_name, &output, false);
                 self.renderer
                     .stream_markdown(&markdown, &mut io::stdout())
                     .map_err(|error| ToolError::new(error.to_string()))?;
                 Ok(output)
             }
-            Err(error) => Err(ToolError::new(error)),
+            Err(error) => {
+                let markdown = format_tool_result(tool_name, &error, true);
+                self.renderer
+                    .stream_markdown(&markdown, &mut io::stdout())
+                    .map_err(|stream_error| ToolError::new(stream_error.to_string()))?;
+                Err(ToolError::new(error))
+            }
         }
     }
 }
@@ -2051,10 +2171,10 @@ mod tests {
         filter_tool_specs, format_compact_report, format_cost_report, format_init_report,
         format_model_report, format_model_switch_report, format_permissions_report,
         format_permissions_switch_report, format_resume_report, format_status_report,
-        normalize_permission_mode, parse_args, parse_git_status_metadata, render_config_report,
-        render_init_claude_md, render_memory_report, render_repl_help,
-        resume_supported_slash_commands, status_context, CliAction, CliOutputFormat, SlashCommand,
-        StatusUsage, DEFAULT_MODEL,
+        format_tool_call_start, format_tool_result, normalize_permission_mode, parse_args,
+        parse_git_status_metadata, render_config_report, render_init_claude_md,
+        render_memory_report, render_repl_help, resume_supported_slash_commands, status_context,
+        CliAction, CliOutputFormat, SlashCommand, StatusUsage, DEFAULT_MODEL,
     };
     use runtime::{ContentBlock, ConversationMessage, MessageRole};
     use std::path::{Path, PathBuf};
@@ -2515,5 +2635,23 @@ mod tests {
         assert_eq!(converted.len(), 3);
         assert_eq!(converted[1].role, "assistant");
         assert_eq!(converted[2].role, "user");
+    }
+    #[test]
+    fn repl_help_mentions_history_completion_and_multiline() {
+        let help = render_repl_help();
+        assert!(help.contains("Up/Down"));
+        assert!(help.contains("Tab"));
+        assert!(help.contains("Shift+Enter/Ctrl+J"));
+    }
+
+    #[test]
+    fn tool_rendering_helpers_compact_output() {
+        let start = format_tool_call_start("read_file", r#"{"path":"src/main.rs"}"#);
+        assert!(start.contains("Tool call"));
+        assert!(start.contains("src/main.rs"));
+
+        let done = format_tool_result("read_file", r#"{"contents":"hello"}"#, false);
+        assert!(done.contains("Tool `read_file`"));
+        assert!(done.contains("contents"));
     }
 }

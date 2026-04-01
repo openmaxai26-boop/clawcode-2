@@ -2,7 +2,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 
 use crate::args::{OutputFormat, PermissionMode};
-use crate::input::LineEditor;
+use crate::input::{LineEditor, ReadOutcome};
 use crate::render::{Spinner, TerminalRenderer};
 use runtime::{ConversationClient, ConversationMessage, RuntimeError, StreamEvent, UsageSummary};
 
@@ -111,16 +111,21 @@ impl CliApp {
     }
 
     pub fn run_repl(&mut self) -> io::Result<()> {
-        let editor = LineEditor::new("› ");
+        let mut editor = LineEditor::new("› ", Vec::new());
         println!("Rusty Claude CLI interactive mode");
         println!("Type /help for commands. Shift+Enter or Ctrl+J inserts a newline.");
 
-        while let Some(input) = editor.read_line()? {
-            if input.trim().is_empty() {
-                continue;
+        loop {
+            match editor.read_line()? {
+                ReadOutcome::Submit(input) => {
+                    if input.trim().is_empty() {
+                        continue;
+                    }
+                    self.handle_submission(&input, &mut io::stdout())?;
+                }
+                ReadOutcome::Cancel => continue,
+                ReadOutcome::Exit => break,
             }
-
-            self.handle_submission(&input, &mut io::stdout())?;
         }
 
         Ok(())
