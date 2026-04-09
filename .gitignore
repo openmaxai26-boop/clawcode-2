@@ -5,3 +5,15 @@ archive/
 # Claude Code local artifacts
 .claude/settings.local.json
 .claude/sessions/
+
+# Environment variables (API keys — ne jamais committer)
+.env
+.env.local
+*.env
+
+# Claw local session data
+.claw/sessions/
+.claw/settings.local.json
+
+# Rust build artifacts
+rust/target/
