@@ -33,18 +33,12 @@
     }
   },
 
-  // Script exécuté une seule fois à la création du Codespace
+  // Build + PATH disponible dès la création
   "postCreateCommand": "bash .devcontainer/post-create.sh",
 
-  // Rend le terminal plus agréable
+  // PATH et env injectés dans TOUS les terminaux dès le démarrage
   "remoteEnv": {
-    "CARGO_TERM_COLOR": "always"
-  },
-
-  // Personnalisation du terminal
-  "features": {
-    "ghcr.io/devcontainers/features/common-utils:2": {
-      "configureZshAsDefaultShell": true
-    }
+    "CARGO_TERM_COLOR": "always",
+    "PATH": "/workspaces/clawcode-2/rust/target/debug:${containerEnv:PATH}"
   }
 }
