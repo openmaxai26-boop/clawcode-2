@@ -1,0 +1,50 @@
+{
+  "name": "Claw Code",
+  "image": "mcr.microsoft.com/devcontainers/rust:1-bookworm",
+
+  // Extensions VS Code utiles pour Rust
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "vadimcn.vscode-lldb",
+        "tamasfe.even-better-toml",
+        "serayuzgur.crates"
+      ],
+      "settings": {
+        "rust-analyzer.cargo.buildScripts.enable": true,
+        "editor.formatOnSave": true,
+        "[rust]": {
+          "editor.defaultFormatter": "rust-lang.rust-analyzer"
+        }
+      }
+    }
+  },
+
+  // Secrets disponibles en tant que variables d'environnement dans le Codespace
+  // Configurez-les dans : GitHub → Settings → Codespaces → Secrets
+  "secrets": {
+    "OPENAI_API_KEY": {
+      "description": "Clé API Groq (ou OpenAI). Obtenez-la sur https://console.groq.com/keys"
+    },
+    "OPENAI_BASE_URL": {
+      "description": "URL de base du provider. Groq : https://api.groq.com/openai/v1",
+      "default": "https://api.groq.com/openai/v1"
+    }
+  },
+
+  // Script exécuté une seule fois à la création du Codespace
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+
+  // Rend le terminal plus agréable
+  "remoteEnv": {
+    "CARGO_TERM_COLOR": "always"
+  },
+
+  // Personnalisation du terminal
+  "features": {
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "configureZshAsDefaultShell": true
+    }
+  }
+}
